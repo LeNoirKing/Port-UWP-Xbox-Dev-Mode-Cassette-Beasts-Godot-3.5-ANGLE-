@@ -56,15 +56,15 @@ powershell -ExecutionPolicy Bypass -File scripts\apply_game_patches.ps1 -GameDir
 
 ### 4. Create a dev certificate, pack, and sign the `.appx`
 ```powershell
-$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=Name" -KeyUsage DigitalSignature -CertStoreLocation "Cert:\CurrentUser\My" -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3","2.5.29.19={text}")
-$pwd = ConvertTo-SecureString -String "godot" -Force -AsPlainText
-Export-PfxCertificate -Cert $cert -FilePath "xbox_dev_Name.pfx" -Password $pwd
+$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=ExampleUser" -KeyUsage DigitalSignature -CertStoreLocation "Cert:\CurrentUser\My" -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3","2.5.29.19={text}")
+$pwd = ConvertTo-SecureString -String "example-password" -Force -AsPlainText
+Export-PfxCertificate -Cert $cert -FilePath "dev_cert_example.pfx" -Password $pwd
 
 powershell -ExecutionPolicy Bypass -File scripts\package_uwp.ps1 `
     -StagingDir "C:\temp\cb_staging" `
     -OutputAppx "Cassette Beasts.appx" `
-    -PfxPath "xbox_dev_Name.pfx" `
-    -PfxPassword "(set a pasword)"
+    -PfxPath "dev_cert_example.pfx" `
+    -PfxPassword "example-password"
 ```
 
 ### 5. Install on Xbox Series S (Dev Mode)
