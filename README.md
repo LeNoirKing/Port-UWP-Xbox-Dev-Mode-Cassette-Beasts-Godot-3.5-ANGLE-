@@ -1,6 +1,6 @@
-# Cassette Beasts — Xbox Series UWP Port (Godot 3.5 + ANGLE)
+# Cassette Beasts — Xbox Series and Xbox One Dev Mode UWP Port (Godot 3.5 + ANGLE)
 
-This repository contains **only the engine patches, modified game scripts, build/packaging tools, UWP export templates, and technical dev diary** required to run *Cassette Beasts* on Xbox Series S in Dev Mode (UWP / `Windows.Universal`) using Godot 3.5 + ANGLE (OpenGL ES 3.0 → Direct3D 11).
+This repository contains **only the engine patches, modified game scripts, build/packaging tools, UWP export templates, and technical dev diary** required to run *Cassette Beasts* on Xbox in Dev Mode (UWP / `Windows.Universal`) using Godot 3.5 + ANGLE (OpenGL ES 3.0 → Direct3D 11).
 
 > **Legal notice:** No copyrighted *Cassette Beasts* assets, full scenes, or proprietary game binaries are included. You need your own legally owned, locally extracted copy of the game.
 
@@ -56,15 +56,15 @@ powershell -ExecutionPolicy Bypass -File scripts\apply_game_patches.ps1 -GameDir
 
 ### 4. Create a dev certificate, pack, and sign the `.appx`
 ```powershell
-$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=Blue" -KeyUsage DigitalSignature -CertStoreLocation "Cert:\CurrentUser\My" -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3","2.5.29.19={text}")
+$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=Name" -KeyUsage DigitalSignature -CertStoreLocation "Cert:\CurrentUser\My" -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3","2.5.29.19={text}")
 $pwd = ConvertTo-SecureString -String "godot" -Force -AsPlainText
-Export-PfxCertificate -Cert $cert -FilePath "xbox_dev_blue.pfx" -Password $pwd
+Export-PfxCertificate -Cert $cert -FilePath "xbox_dev_Name.pfx" -Password $pwd
 
 powershell -ExecutionPolicy Bypass -File scripts\package_uwp.ps1 `
     -StagingDir "C:\temp\cb_staging" `
     -OutputAppx "Cassette Beasts.appx" `
-    -PfxPath "xbox_dev_blue.pfx" `
-    -PfxPassword "godot"
+    -PfxPath "xbox_dev_Name.pfx" `
+    -PfxPassword "(set a pasword)"
 ```
 
 ### 5. Install on Xbox Series S (Dev Mode)
