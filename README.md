@@ -1,5 +1,9 @@
 # Cassette Beasts — Xbox Series and Xbox One Dev Mode UWP Port (Godot 3.5 + ANGLE)
 
+<p align="center">
+  <img src="Logo.jpg" alt="Cassette Beasts Xbox Series S UWP" width="320" />
+</p>
+
 This repository contains **only the engine patches, modified game scripts, build/packaging tools, UWP export templates, and technical dev diary** required to run *Cassette Beasts* on Xbox in Dev Mode (UWP / `Windows.Universal`) using Godot 3.5 + ANGLE (OpenGL ES 3.0 → Direct3D 11).
 
 > **Legal notice:** No copyrighted *Cassette Beasts* assets, full scenes, or proprietary game binaries are included. You need your own legally owned, locally extracted copy of the game.
