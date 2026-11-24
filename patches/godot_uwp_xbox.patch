@@ -1,0 +1,659 @@
+﻿diff --git a/drivers/gles3/rasterizer_canvas_base_gles3.cpp b/drivers/gles3/rasterizer_canvas_base_gles3.cpp
+index 8fa7cdc..94c4a2e 100644
+--- a/drivers/gles3/rasterizer_canvas_base_gles3.cpp
++++ b/drivers/gles3/rasterizer_canvas_base_gles3.cpp
+@@ -200,7 +200,7 @@ void RasterizerCanvasBaseGLES3::canvas_begin() {
+ 
+ void RasterizerCanvasBaseGLES3::canvas_end() {
+ 	glBindVertexArray(0);
+-	glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
++	glBindBufferBase(GL_UNIFORM_BUFFER, 0, storage->resources.dummy_ubo);
+ 	glColorMask(1, 1, 1, 1);
+ 
+ 	glVertexAttrib4f(VS::ARRAY_COLOR, 1, 1, 1, 1);
+@@ -1028,7 +1028,7 @@ void RasterizerCanvasBaseGLES3::draw_lens_distortion_rect(const Rect2 &p_rect, f
+ 	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+ 
+ 	glBindVertexArray(0);
+-	glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
++	glBindBufferBase(GL_UNIFORM_BUFFER, 0, storage->resources.dummy_ubo);
+ }
+ 
+ void RasterizerCanvasBaseGLES3::draw_window_margins(int *black_margin, RID *black_image) {
+diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
+index 1d34c08..31f939c 100644
+--- a/drivers/gles3/rasterizer_gles3.cpp
++++ b/drivers/gles3/rasterizer_gles3.cpp
+@@ -32,6 +32,15 @@
+ 
+ #include "core/os/os.h"
+ #include "core/project_settings.h"
++#ifdef ANGLE_ENABLED
++#include <EGL/egl.h>
++#include <GLES2/gl2ext.h>
++static void GL_APIENTRY _angle_debug_cb(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam) {
++	if (type == 0x824C /* GL_DEBUG_TYPE_ERROR_KHR */ || severity == 0x9146 /* HIGH */) {
++		ERR_PRINT(String("ANGLE GL: ") + (message ? message : "(null)"));
++	}
++}
++#endif
+ 
+ RasterizerStorage *RasterizerGLES3::get_storage() {
+ 	return storage;
+@@ -186,6 +195,17 @@ void RasterizerGLES3::initialize() {
+ 	*/
+ 
+ 	print_line("OpenGL ES 3.0 Renderer: " + VisualServer::get_singleton()->get_video_adapter_name());
++	const char *gl_ver = (const char *)glGetString(GL_VERSION);
++	const char *glsl_ver = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
++	print_line(String("GLES3 GL_VERSION: ") + (gl_ver ? gl_ver : "(null)") + " | GLSL: " + (glsl_ver ? glsl_ver : "(null)"));
++#ifdef ANGLE_ENABLED
++	PFNGLDEBUGMESSAGECALLBACKKHRPROC dbg_cb = (PFNGLDEBUGMESSAGECALLBACKKHRPROC)eglGetProcAddress("glDebugMessageCallbackKHR");
++	if (dbg_cb) {
++		glEnable(0x92E0); // GL_DEBUG_OUTPUT_KHR
++		glEnable(0x8242); // GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR
++		dbg_cb(_angle_debug_cb, nullptr);
++	}
++#endif
+ 	storage->initialize();
+ 	canvas->initialize();
+ 	scene->initialize();
+@@ -415,6 +435,16 @@ void RasterizerGLES3::end_frame(bool p_swap_buffers) {
+ 
+ 	ShaderGLES3::advance_async_shaders_compilation();
+ 
++	static int logged_gl_errors = 0;
++	if (logged_gl_errors < 30) {
++		GLenum err = glGetError();
++		while (err != GL_NO_ERROR && logged_gl_errors < 30) {
++			logged_gl_errors++;
++			ERR_PRINT("GLES3 frame glGetError: 0x" + String::num_uint64(err, 16));
++			err = glGetError();
++		}
++	}
++
+ 	if (p_swap_buffers) {
+ 		OS::get_singleton()->swap_buffers();
+ 	} else {
+diff --git a/drivers/gles3/rasterizer_scene_gles3.cpp b/drivers/gles3/rasterizer_scene_gles3.cpp
+index 87a629a..2ff630f 100644
+--- a/drivers/gles3/rasterizer_scene_gles3.cpp
++++ b/drivers/gles3/rasterizer_scene_gles3.cpp
+@@ -1140,9 +1140,7 @@ bool RasterizerSceneGLES3::_setup_material(RasterizerStorageGLES3::Material *p_m
+ 		return false;
+ 	}
+ 
+-	if (p_material->ubo_id) {
+-		glBindBufferBase(GL_UNIFORM_BUFFER, 1, p_material->ubo_id);
+-	}
++	glBindBufferBase(GL_UNIFORM_BUFFER, 1, p_material->ubo_id ? p_material->ubo_id : storage->resources.dummy_ubo);
+ 
+ 	int tc = p_material->textures.size();
+ 	RID *textures = p_material->textures.ptrw();
+@@ -2322,6 +2320,9 @@ void RasterizerSceneGLES3::_add_geometry_with_material(RasterizerStorageGLES3::G
+ 	}
+ 
+ 	if (p_depth_pass) {
++		if (!p_shadow_pass && p_material->shader->spatial.depth_draw_mode != RasterizerStorageGLES3::Shader::Spatial::DEPTH_DRAW_ALPHA_PREPASS) {
++			return;
++		}
+ 		if (has_blend_alpha || p_material->shader->spatial.uses_depth_texture || ((has_base_alpha || p_instance->cast_shadows == VS::SHADOW_CASTING_SETTING_OFF) && p_material->shader->spatial.depth_draw_mode != RasterizerStorageGLES3::Shader::Spatial::DEPTH_DRAW_ALPHA_PREPASS) || p_material->shader->spatial.depth_draw_mode == RasterizerStorageGLES3::Shader::Spatial::DEPTH_DRAW_NEVER || p_material->shader->spatial.no_depth_test) {
+ 			return; //bye
+ 		}
+@@ -3402,6 +3403,7 @@ void RasterizerSceneGLES3::_render_mrts(Environment *env, const CameraMatrix &p_
+ 		glActiveTexture(GL_TEXTURE1);
+ 		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->effects.ssao.blur_red[0]); //previous level, since mipmaps[0] starts one level bigger
+ 		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->effects.mip_maps[0].sizes[0].fbo); // copy to base level
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+ 		_copy_screen(true);
+ 		state.effect_blur_shader.set_conditional(EffectBlurShaderGLES3::SSAO_MERGE, false);
+ 
+@@ -3455,13 +3457,17 @@ void RasterizerSceneGLES3::_render_mrts(Environment *env, const CameraMatrix &p_
+ 		//glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+ 
+ 		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->fbo); //copy to front first
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+ 
+ 		_copy_screen(true);
+ 
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, storage->frame.current_rt->external.depth ? storage->frame.current_rt->external.depth : storage->frame.current_rt->depth, 0);
++
+ 		glActiveTexture(GL_TEXTURE0);
+ 		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->color);
+ 		state.sss_shader.set_uniform(SubsurfScatteringShaderGLES3::DIR, Vector2(0, 1));
+ 		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->effects.mip_maps[0].sizes[0].fbo); // copy to base level
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+ 		_copy_screen(true);
+ 
+ 		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->effects.mip_maps[0].color); //restore filter
+@@ -3651,8 +3657,18 @@ void RasterizerSceneGLES3::_post_process(Environment *env, const CameraMatrix &p
+ 		state.effect_blur_shader.set_uniform(EffectBlurShaderGLES3::CAMERA_Z_NEAR, p_cam_projection.get_z_near());
+ 		state.effect_blur_shader.set_uniform(EffectBlurShaderGLES3::CAMERA_Z_FAR, p_cam_projection.get_z_far());
+ 
++		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->fbo); //copy to front first
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
++
+ 		glActiveTexture(GL_TEXTURE1);
+ 		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->depth);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+ 
+ 		glActiveTexture(GL_TEXTURE0);
+ 		glBindTexture(GL_TEXTURE_2D, composite_from);
+@@ -3661,15 +3677,17 @@ void RasterizerSceneGLES3::_post_process(Environment *env, const CameraMatrix &p
+ 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+ 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+ 
+-		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->fbo); //copy to front first
+-
+ 		_copy_screen(true);
+ 
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, storage->frame.current_rt->external.depth ? storage->frame.current_rt->external.depth : storage->frame.current_rt->depth, 0);
++
+ 		glActiveTexture(GL_TEXTURE0);
+ 		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->color);
+ 		state.effect_blur_shader.set_uniform(EffectBlurShaderGLES3::DOF_DIR, Vector2(0, 1));
+ 		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->effects.mip_maps[0].sizes[0].fbo); // copy to base level
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+ 		_copy_screen();
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, storage->frame.current_rt->external.depth ? storage->frame.current_rt->external.depth : storage->frame.current_rt->depth, 0);
+ 
+ 		state.effect_blur_shader.set_conditional(EffectBlurShaderGLES3::DOF_FAR_BLUR, false);
+ 		state.effect_blur_shader.set_conditional(EffectBlurShaderGLES3::DOF_QUALITY_LOW, false);
+@@ -3708,8 +3726,18 @@ void RasterizerSceneGLES3::_post_process(Environment *env, const CameraMatrix &p
+ 		state.effect_blur_shader.set_uniform(EffectBlurShaderGLES3::CAMERA_Z_NEAR, p_cam_projection.get_z_near());
+ 		state.effect_blur_shader.set_uniform(EffectBlurShaderGLES3::CAMERA_Z_FAR, p_cam_projection.get_z_far());
+ 
++		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->fbo); //copy to front first
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
++
+ 		glActiveTexture(GL_TEXTURE1);
+ 		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->depth);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+ 
+ 		glActiveTexture(GL_TEXTURE0);
+ 		glBindTexture(GL_TEXTURE_2D, composite_from);
+@@ -3718,9 +3746,9 @@ void RasterizerSceneGLES3::_post_process(Environment *env, const CameraMatrix &p
+ 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+ 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+ 
+-		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->fbo); //copy to front first
+-
+ 		_copy_screen();
++
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, storage->frame.current_rt->external.depth ? storage->frame.current_rt->external.depth : storage->frame.current_rt->depth, 0);
+ 		//manually do the blend if this is the first operation resolving from the diffuse buffer
+ 		state.effect_blur_shader.set_conditional(EffectBlurShaderGLES3::DOF_NEAR_BLUR_MERGE, composite_from == storage->frame.current_rt->buffers.diffuse);
+ 		state.effect_blur_shader.set_conditional(EffectBlurShaderGLES3::DOF_NEAR_FIRST_TAP, false);
+@@ -3734,11 +3762,22 @@ void RasterizerSceneGLES3::_post_process(Environment *env, const CameraMatrix &p
+ 		state.effect_blur_shader.set_uniform(EffectBlurShaderGLES3::CAMERA_Z_NEAR, p_cam_projection.get_z_near());
+ 		state.effect_blur_shader.set_uniform(EffectBlurShaderGLES3::CAMERA_Z_FAR, p_cam_projection.get_z_far());
+ 
++		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->effects.mip_maps[0].sizes[0].fbo); // copy to base level
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
++
++		glActiveTexture(GL_TEXTURE1);
++		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->depth);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
++
+ 		glActiveTexture(GL_TEXTURE0);
+ 		glBindTexture(GL_TEXTURE_2D, storage->frame.current_rt->color);
+ 
+-		glBindFramebuffer(GL_FRAMEBUFFER, storage->frame.current_rt->effects.mip_maps[0].sizes[0].fbo); // copy to base level
+-
+ 		if (composite_from != storage->frame.current_rt->buffers.diffuse) {
+ 			glEnable(GL_BLEND);
+ 			glBlendEquation(GL_FUNC_ADD);
+@@ -3751,6 +3790,7 @@ void RasterizerSceneGLES3::_post_process(Environment *env, const CameraMatrix &p
+ 		}
+ 
+ 		_copy_screen(true);
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, storage->frame.current_rt->external.depth ? storage->frame.current_rt->external.depth : storage->frame.current_rt->depth, 0);
+ 
+ 		if (composite_from != storage->frame.current_rt->buffers.diffuse) {
+ 			glDisable(GL_BLEND);
+@@ -4192,7 +4232,10 @@ void RasterizerSceneGLES3::render_scene(const Transform &p_cam_transform, const
+ 		_fill_render_list(p_cull_result, p_cull_count, true, false);
+ 		render_list.sort_by_key(false);
+ 		state.scene_shader.set_conditional(SceneShaderGLES3::RENDER_DEPTH, true);
++		glEnable(GL_POLYGON_OFFSET_FILL);
++		glPolygonOffset(0.0f, 4.0f);
+ 		_render_list(render_list.elements, render_list.element_count, p_cam_transform, p_cam_projection, nullptr, false, false, true, false, false);
++		glDisable(GL_POLYGON_OFFSET_FILL);
+ 		state.scene_shader.set_conditional(SceneShaderGLES3::RENDER_DEPTH, false);
+ 
+ 		glColorMask(1, 1, 1, 1);
+diff --git a/drivers/gles3/rasterizer_storage_gles3.cpp b/drivers/gles3/rasterizer_storage_gles3.cpp
+index 4859451..f6099c2 100644
+--- a/drivers/gles3/rasterizer_storage_gles3.cpp
++++ b/drivers/gles3/rasterizer_storage_gles3.cpp
+@@ -627,6 +627,12 @@ void RasterizerStorageGLES3::texture_allocate(RID p_texture, int p_width, int p_
+ 			texture->is_npot_repeat_mipmap = true;
+ 		}
+ #endif // JAVASCRIPT_ENABLED
++#ifdef ANGLE_ENABLED
++		// ANGLE rejects compressed textures whose dimensions are not multiples of 4.
++		if ((p_width % 4) != 0 || (p_height % 4) != 0) {
++			texture->is_npot_repeat_mipmap = true;
++		}
++#endif // ANGLE_ENABLED
+ 
+ 		Image::Format real_format;
+ 		_get_gl_image_and_format(Ref<Image>(),
+@@ -6563,9 +6569,7 @@ void RasterizerStorageGLES3::update_particles() {
+ 		} else {
+ 			shaders.particles.set_custom_shader(material->shader->custom_code_id);
+ 
+-			if (material->ubo_id) {
+-				glBindBufferBase(GL_UNIFORM_BUFFER, 0, material->ubo_id);
+-			}
++			glBindBufferBase(GL_UNIFORM_BUFFER, 0, material->ubo_id ? material->ubo_id : resources.dummy_ubo);
+ 
+ 			int tc = material->textures.size();
+ 			RID *textures = material->textures.ptrw();
+@@ -8170,22 +8174,27 @@ void RasterizerStorageGLES3::initialize() {
+ 		} else {
+ 			print_line("Async. shader compilation: OFF (enabled for " + String(Engine::get_singleton()->is_editor_hint() ? "editor" : "project") + ", but not supported)");
+ 		}
+-		if (effectively_on) {
+-			if (config.shader_cache_enabled) {
+-				if (config.program_binary_supported) {
+-					print_line("Shader cache: ON");
+-					shaders.cache = memnew(ShaderCacheGLES3);
+-					shaders.cache_write_queue = memnew(ThreadedCallableQueue<GLuint>());
+-				} else {
+-					print_line("Shader cache: OFF (enabled, but not supported)");
+-				}
+-			} else {
+-				print_line("Shader cache: OFF");
+-			}
+-		}
+ 	} else {
+ 		print_line("Async. shader compilation: OFF");
+ 	}
++	print_line("GLES3 caps: etc2=" + itos(config.etc2_supported) +
++			" s3tc=" + itos(config.s3tc_supported) +
++			" bptc=" + itos(config.bptc_supported) +
++			" prog_bin=" + itos(config.program_binary_supported) +
++			" fb_float=" + itos(config.framebuffer_float_supported) +
++			" fb_half=" + itos(config.framebuffer_half_float_supported) +
++			" tex_float_lin=" + itos(config.texture_float_linear_supported));
++	if (config.shader_cache_enabled) {
++		if (config.program_binary_supported) {
++			print_line("Shader cache: ON");
++			shaders.cache = memnew(ShaderCacheGLES3);
++			shaders.cache_write_queue = memnew(ThreadedCallableQueue<GLuint>());
++		} else {
++			print_line("Shader cache: OFF (enabled, but not supported)");
++		}
++	} else {
++		print_line("Shader cache: OFF");
++	}
+ 	ShaderGLES3::compile_queue = shaders.compile_queue;
+ 	ShaderGLES3::parallel_compile_supported = config.parallel_shader_compile_supported;
+ 	ShaderGLES3::shader_cache = shaders.cache;
+@@ -8193,6 +8202,20 @@ void RasterizerStorageGLES3::initialize() {
+ 
+ 	shaders.copy.init();
+ 
++	{
++		// Dummy zeroed UBO so ANGLE never sees an unbound uniform buffer slot.
++		glGenBuffers(1, &resources.dummy_ubo);
++		glBindBuffer(GL_UNIFORM_BUFFER, resources.dummy_ubo);
++		Vector<uint8_t> zeros;
++		zeros.resize(65536);
++		memset(zeros.ptrw(), 0, 65536);
++		glBufferData(GL_UNIFORM_BUFFER, 65536, zeros.ptr(), GL_STATIC_DRAW);
++		glBindBuffer(GL_UNIFORM_BUFFER, 0);
++		for (int i = 0; i < 8; i++) {
++			glBindBufferBase(GL_UNIFORM_BUFFER, i, resources.dummy_ubo);
++		}
++	}
++
+ 	{
+ 		//default textures
+ 
+diff --git a/drivers/gles3/rasterizer_storage_gles3.h b/drivers/gles3/rasterizer_storage_gles3.h
+index 8de3ac4..fde0235 100644
+--- a/drivers/gles3/rasterizer_storage_gles3.h
++++ b/drivers/gles3/rasterizer_storage_gles3.h
+@@ -152,6 +152,7 @@ public:
+ 
+ 		GLuint transform_feedback_buffers[2];
+ 		GLuint transform_feedback_array;
++		GLuint dummy_ubo;
+ 
+ 	} resources;
+ 
+diff --git a/drivers/gles3/shader_cache_gles3.cpp b/drivers/gles3/shader_cache_gles3.cpp
+index 862a7f3..5167988 100644
+--- a/drivers/gles3/shader_cache_gles3.cpp
++++ b/drivers/gles3/shader_cache_gles3.cpp
+@@ -63,17 +63,25 @@ bool ShaderCacheGLES3::retrieve(const String &p_program_hash, uint32_t *r_format
+ 		return false;
+ 	}
+ 
+-	FileAccessRef fa = FileAccess::open(storage_path.plus_file(p_program_hash), FileAccess::READ_WRITE);
+-	if (!fa) {
+-		return false;
++	bool from_res = false;
++	FileAccess *fa_raw = FileAccess::open(storage_path.plus_file(p_program_hash), FileAccess::READ_WRITE);
++	if (!fa_raw) {
++		fa_raw = FileAccess::open("res://shader_cache/" + p_program_hash, FileAccess::READ);
++		if (!fa_raw) {
++			return false;
++		}
++		from_res = true;
+ 	}
++	FileAccessRef fa(fa_raw);
+ 
+ 	*r_format = fa->get_32();
+ 	uint32_t binary_len = fa->get_32();
+ 	if (binary_len <= 0 || binary_len > 0x10000000) {
+ 		ERR_PRINT("Program binary cache file is corrupted. Ignoring and removing.");
+ 		fa->close();
+-		storage_da->remove(p_program_hash);
++		if (!from_res) {
++			storage_da->remove(p_program_hash);
++		}
+ 		return false;
+ 	}
+ 	r_data->resize(binary_len);
+@@ -81,13 +89,17 @@ bool ShaderCacheGLES3::retrieve(const String &p_program_hash, uint32_t *r_format
+ 	if (fa->get_buffer(w.ptr(), binary_len) != static_cast<uint64_t>(binary_len)) {
+ 		ERR_PRINT("Program binary cache file is truncated. Ignoring and removing.");
+ 		fa->close();
+-		storage_da->remove(p_program_hash);
++		if (!from_res) {
++			storage_da->remove(p_program_hash);
++		}
+ 		return false;
+ 	}
+ 
+-	// Force update modification time (for LRU purge)
+-	fa->seek(0);
+-	fa->store_32(*r_format);
++	if (!from_res) {
++		// Force update modification time (for LRU purge)
++		fa->seek(0);
++		fa->store_32(*r_format);
++	}
+ 
+ 	return true;
+ }
+@@ -167,7 +179,7 @@ void ShaderCacheGLES3::_purge_excess() {
+ }
+ 
+ ShaderCacheGLES3::ShaderCacheGLES3() {
+-	storage_size = (int)GLOBAL_GET("rendering/gles3/shaders/shader_cache_size_mb") * 1024 * 1024;
++	storage_size = (uint64_t)(int)GLOBAL_GET("rendering/gles3/shaders/shader_cache_size_mb") * 1024ULL * 1024ULL;
+ 
+ 	storage_da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+ 	storage_path = OS::get_singleton()->get_cache_path().plus_file(OS::get_singleton()->get_godot_dir_name()).plus_file("shaders");
+diff --git a/drivers/gles3/shader_gles3.cpp b/drivers/gles3/shader_gles3.cpp
+index 388c376..7c64f7b 100644
+--- a/drivers/gles3/shader_gles3.cpp
++++ b/drivers/gles3/shader_gles3.cpp
+@@ -448,9 +448,7 @@ bool ShaderGLES3::_process_program_state(Version *p_version, bool p_async_forbid
+ 						ready = true;
+ 					} else {
+ 						if (p_version->program_binary.source == Version::ProgramBinary::SOURCE_CACHE) {
+-#ifdef DEBUG_ENABLED
+ 							WARN_PRINT("Program binary from cache has been rejected by the GL. Removing from cache.");
+-#endif
+ 							shader_cache->remove(p_version->program_binary.cache_hash);
+ 							p_version->compile_status = Version::COMPILE_STATUS_RESTART_NEEDED;
+ 						} else {
+diff --git a/drivers/gles3/shader_gles3.h b/drivers/gles3/shader_gles3.h
+index 38050f0..17f200d 100644
+--- a/drivers/gles3/shader_gles3.h
++++ b/drivers/gles3/shader_gles3.h
+@@ -157,7 +157,7 @@ private:
+ 		VersionKey() {}
+ 		VersionKey(uint64_t p_key) :
+ 				key(p_key) {}
+-		_FORCE_INLINE_ bool is_subject_to_caching() const { return (version & UBERSHADER_FLAG); }
++		_FORCE_INLINE_ bool is_subject_to_caching() const { return (version & UBERSHADER_FLAG) || (!compile_queue && !parallel_compile_supported); }
+ 	};
+ 
+ 	struct Version {
+diff --git a/drivers/gles3/shaders/effect_blur.glsl b/drivers/gles3/shaders/effect_blur.glsl
+index 7936d2d..f87d8ff 100644
+--- a/drivers/gles3/shaders/effect_blur.glsl
++++ b/drivers/gles3/shaders/effect_blur.glsl
+@@ -76,9 +76,9 @@ const int dof_kernel_from = 10;
+ const float dof_kernel[21] = float[](0.028174, 0.032676, 0.037311, 0.041944, 0.046421, 0.050582, 0.054261, 0.057307, 0.059587, 0.060998, 0.061476, 0.060998, 0.059587, 0.057307, 0.054261, 0.050582, 0.046421, 0.041944, 0.037311, 0.032676, 0.028174);
+ #endif
+ 
+-uniform sampler2D dof_source_depth; //texunit:1
+-uniform float dof_begin;
+-uniform float dof_end;
++uniform highp sampler2D dof_source_depth; //texunit:1
++uniform highp float dof_begin;
++uniform highp float dof_end;
+ uniform vec2 dof_dir;
+ uniform float dof_radius;
+ 
+@@ -108,8 +108,8 @@ uniform float glow_hdr_scale;
+ 
+ #endif
+ 
+-uniform float camera_z_far;
+-uniform float camera_z_near;
++uniform highp float camera_z_far;
++uniform highp float camera_z_near;
+ 
+ void main() {
+ #ifdef GAUSSIAN_HORIZONTAL
+@@ -192,7 +192,7 @@ void main() {
+ 
+ 	vec4 color_accum = vec4(0.0);
+ 
+-	float depth = textureLod(dof_source_depth, uv_interp, 0.0).r;
++	highp float depth = textureLod(dof_source_depth, uv_interp, 0.0).r;
+ 	depth = depth * 2.0 - 1.0;
+ #ifdef USE_ORTHOGONAL_PROJECTION
+ 	depth = ((depth + (camera_z_far + camera_z_near) / (camera_z_far - camera_z_near)) * (camera_z_far - camera_z_near)) / 2.0;
+@@ -209,7 +209,7 @@ void main() {
+ 
+ 		float tap_k = dof_kernel[i];
+ 
+-		float tap_depth = texture(dof_source_depth, tap_uv, 0.0).r;
++		highp float tap_depth = textureLod(dof_source_depth, tap_uv, 0.0).r;
+ 		tap_depth = tap_depth * 2.0 - 1.0;
+ #ifdef USE_ORTHOGONAL_PROJECTION
+ 		tap_depth = ((tap_depth + (camera_z_far + camera_z_near) / (camera_z_far - camera_z_near)) * (camera_z_far - camera_z_near)) / 2.0;
+@@ -250,7 +250,7 @@ void main() {
+ 
+ 		vec4 tap_color = textureLod(source_color, tap_uv, 0.0);
+ 
+-		float tap_depth = texture(dof_source_depth, tap_uv, 0.0).r;
++		highp float tap_depth = textureLod(dof_source_depth, tap_uv, 0.0).r;
+ 		tap_depth = tap_depth * 2.0 - 1.0;
+ #ifdef USE_ORTHOGONAL_PROJECTION
+ 		tap_depth = ((tap_depth + (camera_z_far + camera_z_near) / (camera_z_far - camera_z_near)) * (camera_z_far - camera_z_near)) / 2.0;
+@@ -280,9 +280,6 @@ void main() {
+ 
+ #endif
+ 
+-#ifndef DOF_NEAR_FIRST_TAP
+-	//color_accum=vec4(vec3(color_accum.a),1.0);
+-#endif
+ 	frag_color = color_accum;
+ 
+ #endif
+diff --git a/platform/uwp/app.cpp b/platform/uwp/app.cpp
+index a00ef77..a02cd18 100644
+--- a/platform/uwp/app.cpp
++++ b/platform/uwp/app.cpp
+@@ -139,6 +139,9 @@ void App::SetWindow(CoreWindow ^ p_window) {
+ 			ref new TypedEventHandler<CoreWindow ^, CharacterReceivedEventArgs ^>(this, &App::OnCharacterReceived);
+ 	window->KeyDown +=
+ 			ref new TypedEventHandler<CoreWindow ^, KeyEventArgs ^>(this, &App::OnKeyDown);
++
++	Windows::UI::Core::SystemNavigationManager::GetForCurrentView()->BackRequested +=
++			ref new EventHandler<Windows::UI::Core::BackRequestedEventArgs ^>(this, &App::OnBackRequested);
+ 	window->KeyUp +=
+ 			ref new TypedEventHandler<CoreWindow ^, KeyEventArgs ^>(this, &App::OnKeyUp);
+ 
+@@ -417,6 +420,10 @@ void App::OnCharacterReceived(CoreWindow ^ sender, CharacterReceivedEventArgs ^
+ 	key_event(sender, true, nullptr, args);
+ }
+ 
++void App::OnBackRequested(Platform::Object ^ sender, Windows::UI::Core::BackRequestedEventArgs ^ args) {
++	args->Handled = true;
++}
++
+ // Initializes scene resources
+ void App::Load(Platform::String ^ entryPoint) {
+ }
+diff --git a/platform/uwp/app.h b/platform/uwp/app.h
+index b367678..26223c2 100644
+--- a/platform/uwp/app.h
++++ b/platform/uwp/app.h
+@@ -86,6 +86,7 @@ namespace GodotUWP
+ 		void OnKeyDown(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::KeyEventArgs^ args);
+ 		void OnKeyUp(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::KeyEventArgs^ args);
+ 		void OnCharacterReceived(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::CharacterReceivedEventArgs^ args);
++		void OnBackRequested(Platform::Object^ sender, Windows::UI::Core::BackRequestedEventArgs^ args);
+ 
+ 		void UpdateWindowSize(Windows::Foundation::Size size);
+ 		void InitializeEGL(Windows::UI::Core::CoreWindow^ window);
+diff --git a/platform/uwp/context_egl_uwp.cpp b/platform/uwp/context_egl_uwp.cpp
+index c5e9844..9d391dd 100644
+--- a/platform/uwp/context_egl_uwp.cpp
++++ b/platform/uwp/context_egl_uwp.cpp
+@@ -77,6 +77,7 @@ Error ContextEGL_UWP::initialize() {
+ 		EGL_DEPTH_SIZE, 8,
+ 		EGL_STENCIL_SIZE, 8,
+ 		EGL_SAMPLE_BUFFERS, 0,
++		EGL_RENDERABLE_TYPE, (driver == GLES_2_0) ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES3_BIT_KHR,
+ 		EGL_NONE
+ 	};
+ 
+diff --git a/platform/uwp/detect.py b/platform/uwp/detect.py
+index c9160ad..651ba3d 100644
+--- a/platform/uwp/detect.py
++++ b/platform/uwp/detect.py
+@@ -92,7 +92,8 @@ def configure(env):
+         + " /p:Configuration=Release /p:Platform="
+     )
+ 
+-    if os.path.isfile(str(os.getenv("ANGLE_SRC_PATH")) + "/winrt/10/src/angle.sln"):
++    # Set ANGLE_PREBUILT=1 when ANGLE was already built (e.g. with a newer toolset than v140).
++    if not os.getenv("ANGLE_PREBUILT") and os.path.isfile(str(os.getenv("ANGLE_SRC_PATH")) + "/winrt/10/src/angle.sln"):
+         env["build_angle"] = True
+ 
+     ## Architecture
+diff --git a/platform/uwp/os_uwp.cpp b/platform/uwp/os_uwp.cpp
+index 26494af..8592ee4 100644
+--- a/platform/uwp/os_uwp.cpp
++++ b/platform/uwp/os_uwp.cpp
+@@ -165,6 +165,8 @@ Error OS_UWP::initialize(const VideoMode &p_desired, int p_video_driver, int p_a
+ 
+ 	if (p_video_driver == VIDEO_DRIVER_GLES2) {
+ 		opengl_api_type = ContextEGL_UWP::GLES_2_0;
++	} else {
++		opengl_api_type = ContextEGL_UWP::GLES_3_0;
+ 	}
+ 
+ 	bool gl_initialization_error = false;
+@@ -183,6 +185,7 @@ Error OS_UWP::initialize(const VideoMode &p_desired, int p_video_driver, int p_a
+ 					break;
+ 				}
+ 
++				WARN_PRINT("GLES3 context initialization failed, falling back to GLES2.");
+ 				p_video_driver = VIDEO_DRIVER_GLES2;
+ 				opengl_api_type = ContextEGL_UWP::GLES_2_0;
+ 			} else {
+@@ -739,17 +742,30 @@ bool OS_UWP::has_touchscreen_ui_hint() const {
+ }
+ 
+ bool OS_UWP::has_virtual_keyboard() const {
++	if (Windows::System::Profile::AnalyticsInfo::VersionInfo->DeviceFamily == "Windows.Xbox") {
++		return true;
++	}
+ 	return UIViewSettings::GetForCurrentView()->UserInteractionMode == UserInteractionMode::Touch;
+ }
+ 
+ void OS_UWP::show_virtual_keyboard(const String &p_existing_text, const Rect2 &p_screen_rect, bool p_multiline, int p_max_input_length, int p_cursor_start, int p_cursor_end) {
+-	InputPane ^ pane = InputPane::GetForCurrentView();
+-	pane->TryShow();
++	try {
++		InputPane ^ pane = InputPane::GetForCurrentView();
++		if (pane != nullptr) {
++			pane->TryShow();
++		}
++	} catch (...) {
++	}
+ }
+ 
+ void OS_UWP::hide_virtual_keyboard() {
+-	InputPane ^ pane = InputPane::GetForCurrentView();
+-	pane->TryHide();
++	try {
++		InputPane ^ pane = InputPane::GetForCurrentView();
++		if (pane != nullptr) {
++			pane->TryHide();
++		}
++	} catch (...) {
++	}
+ }
+ 
+ static String format_error_message(DWORD id) {
+@@ -823,6 +839,10 @@ String OS_UWP::get_user_data_dir() const {
+ 	return String(data_folder->Path->Data()).replace("\\", "/");
+ }
+ 
++String OS_UWP::get_cache_path() const {
++	return get_user_data_dir();
++}
++
+ bool OS_UWP::_check_internal_feature_support(const String &p_feature) {
+ 	return p_feature == "pc";
+ }
+diff --git a/platform/uwp/os_uwp.h b/platform/uwp/os_uwp.h
+index 543d231..bdf88d1 100644
+--- a/platform/uwp/os_uwp.h
++++ b/platform/uwp/os_uwp.h
+@@ -224,6 +224,7 @@ public:
+ 	virtual String get_user_data_dir() const;
+ 
+ 	virtual bool _check_internal_feature_support(const String &p_feature);
++	virtual String get_cache_path() const;
+ 
+ 	void set_window(Windows::UI::Core::CoreWindow ^ p_window);
+ 	void screen_size_changed();
+diff --git a/scene/resources/material.cpp b/scene/resources/material.cpp
+index 82697e4..e26748a 100644
+--- a/scene/resources/material.cpp
++++ b/scene/resources/material.cpp
+@@ -816,7 +816,11 @@ void SpatialMaterial::_update_shader() {
+ 		code += "\tfloat dist = albedo_tex.a;\n";
+ 		code += "\talbedo_tex.a = smoothstep(0.5 - smoothing, 0.5 + smoothing, dist);\n";
+ 		code += "\talbedo_tex.rgb = vec3(1.0);\n";
++#ifdef ANGLE_ENABLED
++	} else if (flags[FLAG_ALBEDO_TEXTURE_FORCE_SRGB] || (textures[TEXTURE_ALBEDO].is_valid() && !(textures[TEXTURE_ALBEDO]->get_flags() & Texture::FLAG_CONVERT_TO_LINEAR))) {
++#else
+ 	} else if (flags[FLAG_ALBEDO_TEXTURE_FORCE_SRGB]) {
++#endif
+ 		code += "\talbedo_tex.rgb = mix(pow((albedo_tex.rgb + vec3(0.055)) * (1.0 / (1.0 + 0.055)),vec3(2.4)),albedo_tex.rgb.rgb * (1.0 / 12.92),lessThan(albedo_tex.rgb,vec3(0.04045)));\n";
+ 	}
+ 

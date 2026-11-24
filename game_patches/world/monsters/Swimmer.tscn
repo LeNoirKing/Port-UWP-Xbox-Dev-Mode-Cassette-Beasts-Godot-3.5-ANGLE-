@@ -1,0 +1,138 @@
+[gd_scene load_steps=19 format=2]
+
+[ext_resource path="res://world/npc/NPC.tscn" type="PackedScene" id=1]
+[ext_resource path="res://addons/misc_utils/StateMachine.gd" type="Script" id=2]
+[ext_resource path="res://nodes/actions/HasAbilityAction.gd" type="Script" id=3]
+[ext_resource path="res://nodes/actions/BattleAction.gd" type="Script" id=4]
+[ext_resource path="res://world/core/PlayerDetector.tscn" type="PackedScene" id=6]
+[ext_resource path="res://world/behaviors/monsters/SwimmerBehavior.tscn" type="PackedScene" id=7]
+[ext_resource path="res://world/monsters/SwimmerMonsterState.gd" type="Script" id=8]
+[ext_resource path="res://sfx/world/footsteps/land_2.wav" type="AudioStream" id=9]
+[ext_resource path="res://sprites/environment/world/splash.png" type="Texture" id=10]
+[ext_resource path="res://nodes/actions/AdvantageCheckAction.gd" type="Script" id=20]
+
+[sub_resource type="SphereShape" id=1]
+
+[sub_resource type="CapsuleShape" id=2]
+radius = 1.1
+height = 1.1
+
+[sub_resource type="BoxShape" id=3]
+extents = Vector3( 7, 2, 40 )
+
+[sub_resource type="SpatialMaterial" id=4]
+albedo_color = Color( 0.27451, 0.282353, 0.807843, 1 )
+
+[sub_resource type="SphereMesh" id=5]
+material = SubResource( 4 )
+height = 1.0
+is_hemisphere = true
+
+[sub_resource type="SpatialMaterial" id=7]
+params_billboard_mode = 3
+params_use_alpha_scissor = true
+params_alpha_scissor_threshold = 0.98
+particles_anim_h_frames = 3
+particles_anim_v_frames = 1
+particles_anim_loop = false
+albedo_texture = ExtResource( 10 )
+
+[sub_resource type="QuadMesh" id=8]
+material = SubResource( 7 )
+size = Vector2( 0.5, 0.5 )
+
+[node name="Swimmer" instance=ExtResource( 1 )]
+collision_layer = 16512
+collision_mask = 32769
+respawn_at_kill_depth = false
+
+[node name="CollisionShape" parent="." index="1"]
+transform = Transform( 1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0 )
+shape = SubResource( 1 )
+
+[node name="Sprite" parent="." index="2"]
+emission = Color( 0, 0, 0, 1 )
+wave_amplitude = 0.0
+wave_t_frequency = 5.0
+wave_v_frequency = 0.0
+static_amount = 0.0
+static_offset = 0.0
+static_speed = 0.0
+
+[node name="Interaction" parent="." index="4"]
+display_marker = false
+
+[node name="HasAbilityAction" type="Node" parent="Interaction" index="1"]
+script = ExtResource( 3 )
+ability = "swim"
+
+[node name="AdvantageCheckAction" type="Node" parent="Interaction/HasAbilityAction" index="0"]
+script = ExtResource( 20 )
+
+[node name="BattleAction" type="Node" parent="Interaction/HasAbilityAction/AdvantageCheckAction" index="0"]
+script = ExtResource( 4 )
+result_on_player_win = 1
+remove_pawn_on_success = true
+
+[node name="Footsteps" parent="." index="5"]
+land_audio = ExtResource( 9 )
+
+[node name="Controls" parent="." index="6"]
+infinite_deceleration = false
+default_infinite_deceleration = false
+
+[node name="PlayerTouchDetector" parent="." index="8" instance=ExtResource( 6 )]
+
+[node name="CollisionShape" type="CollisionShape" parent="PlayerTouchDetector" index="0"]
+transform = Transform( 1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 1.325, 0 )
+shape = SubResource( 2 )
+
+[node name="PlayerSightDetector" parent="." index="9" instance=ExtResource( 6 )]
+sneak_immunity = false
+
+[node name="CollisionShape" type="CollisionShape" parent="PlayerSightDetector" index="0"]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0 )
+shape = SubResource( 3 )
+
+[node name="MonsterBehavior" parent="." index="10" instance=ExtResource( 7 )]
+
+[node name="MeshInstance" type="MeshInstance" parent="." index="11"]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1.25, 0, 0, 0 )
+mesh = SubResource( 5 )
+material/0 = null
+
+[node name="StateMachine" type="Node" parent="." index="12"]
+script = ExtResource( 2 )
+
+[node name="SwimmerMonsterState" type="Node" parent="StateMachine" index="0"]
+script = ExtResource( 8 )
+friction = 32.0
+
+[node name="Particles" type="CPUParticles" parent="." index="13"]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, -0.5, 1, -0.75 )
+cast_shadow = 0
+amount = 32
+lifetime = 0.3
+local_coords = false
+mesh = SubResource( 8 )
+direction = Vector3( 0, 1, -0.01 )
+spread = 30.0
+flatness = 1.0
+initial_velocity = 8.0
+anim_speed = 1.0
+
+[node name="Particles2" type="CPUParticles" parent="." index="14"]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 1, -0.75 )
+cast_shadow = 0
+amount = 32
+lifetime = 0.3
+local_coords = false
+mesh = SubResource( 8 )
+direction = Vector3( 0, 1, -0.01 )
+spread = 30.0
+flatness = 1.0
+initial_velocity = 8.0
+anim_speed = 1.0
+
+[connection signal="detected" from="PlayerTouchDetector" to="Interaction" method="interact"]
+[connection signal="detected" from="PlayerSightDetector" to="MonsterBehavior" method="start_pursuit"]
